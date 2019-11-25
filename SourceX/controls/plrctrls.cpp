@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <algorithm>
+#include <list>
 
 #include "controls/controller_motion.h"
 #include "controls/game_controls.h"
@@ -166,7 +167,24 @@ bool HasRangedSpell()
 	    && !spelldata[spl].sTownSpell;
 }
 
-void CheckMonstersNearby()
+bool CanTargetMonster(int mi)
+{
+	const auto &monst = monster[mi];
+
+	if (monst._mFlags & (MFLAG_HIDDEN | MFLAG_GOLEM))
+		return false;
+	if (monst._mhitpoints >> 6 <= 0) // dead
+		return false;
+
+	const int mx = monst._mx;
+	const int my = monst._my;
+	if (!(dFlags[mx][my] & BFLAG_LIT)) // not visable
+		return false;
+
+	return true;
+}
+
+void FindRangedTarget()
 {
 	int newRotations, newDdistance;
 	int distance = 2 * (MAXDUNX + MAXDUNY);
@@ -177,19 +195,11 @@ void CheckMonstersNearby()
 		const auto &monst = monster[i];
 		const int mx = monst._mx;
 		const int my = monst._my;
-		if (dMonster[mx][my] == 0
-		    || monst._mFlags & (MFLAG_HIDDEN | MFLAG_GOLEM) // hidden or golem
-		    || monst._mhitpoints >> 6 <= 0                  // dead
-		    || !(dFlags[mx][my] & BFLAG_LIT)                // not visable
-		    || !(monst.MData->mSelFlag & 7))                // selectable
+		if (!CanTargetMonster(i))
 			continue;
 
-		if (plr[myplr]._pwtype == WT_RANGED || HasRangedSpell())
-			newDdistance = GetDistanceRanged(mx, my);
-		else
-			newDdistance = GetDistance(mx, my, distance);
-
-		if (newDdistance == 0 || distance < newDdistance || (pcursmonst != -1 && CanTalkToMonst(i))) {
+		newDdistance = GetDistanceRanged(mx, my);
+		if (distance < newDdistance || (pcursmonst != -1 && CanTalkToMonst(i))) {
 			continue;
 		}
 		if (distance == newDdistance) {
@@ -201,6 +211,75 @@ void CheckMonstersNearby()
 		rotations = newRotations;
 		pcursmonst = i;
 	}
+}
+
+void FindMeleeTarget()
+{
+	bool visited[MAXDUNX][MAXDUNY] = { 0 };
+	int maxSteps = 25;
+	int rotations = 5;
+	int x = plr[myplr]._px;
+	int y = plr[myplr]._py;
+
+	std::list<bfsNode> queue;
+
+	visited[x][y] = true;
+	queue.push_back({ x, y, 0 });
+
+	while (!queue.empty()) {
+		bfsNode node = queue.front();
+		queue.pop_front();
+
+		for (int i = 0; i < 8; i++) {
+			int dx = node.x + pathxdir[i];
+			int dy = node.y + pathydir[i];
+
+			if (visited[dx][dy])
+				continue; // already visisted
+
+			if (!PosOkPlayer(myplr, dx, dy)) {
+				visited[dx][dy] = true;
+
+				if (dMonster[dx][dy] != 0) {
+					int mi = dMonster[dx][dy] > 0 ? dMonster[dx][dy] - 1 : -(dMonster[dx][dy] + 1);
+					if (CanTargetMonster(mi)) {
+						int newRotations = GetRoteryDistance(dx, dy);
+						if (rotations < newRotations || (pcursmonst != -1 && CanTalkToMonst(i)))
+							continue;
+						rotations = newRotations;
+						pcursmonst = mi;
+						maxSteps = node.steps;
+					}
+				}
+
+				continue;
+			}
+
+			if (node.steps >= maxSteps) {
+				visited[dx][dy] = true;
+				continue;
+			}
+
+			PATHNODE pPath;
+			pPath.x = node.x;
+			pPath.y = node.y;
+
+			if (path_solid_pieces(&pPath, dx, dy)) {
+				queue.push_back({ dx, dy, node.steps + 1 });
+				visited[dx][dy] = true;
+			}
+		}
+	}
+}
+
+void CheckMonstersNearby()
+{
+	if (plr[myplr]._pwtype == WT_RANGED || HasRangedSpell()) {
+		FindRangedTarget();
+		return;
+	}
+
+	FindMeleeTarget();
 }
 
 void CheckPlayerNearby()
@@ -252,7 +331,8 @@ void FindActor()
 	else
 		CheckTownersNearby();
 
-	CheckPlayerNearby();
+	if (gbMaxPlayers != 1)
+		CheckPlayerNearby();
 }
 
 void Interact()
@@ -794,7 +874,7 @@ void PerformSpellAction()
 
 	int spl = plr[myplr]._pRSpell;
 	if ((pcursplr == -1 && (spl == SPL_RESURRECT || spl == SPL_HEALOTHER))
-		|| (pcursobj == -1 && spl == SPL_DISARM)) {
+	    || (pcursobj == -1 && spl == SPL_DISARM)) {
 		if (plr[myplr]._pClass == PC_WARRIOR) {
 			PlaySFX(PS_WARR27);
 #ifndef SPAWN

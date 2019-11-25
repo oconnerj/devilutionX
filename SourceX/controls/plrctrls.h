@@ -37,6 +37,12 @@ typedef struct coords {
 	int x;
 	int y;
 } coords;
+
+typedef struct bfsNode {
+	int x;
+	int y;
+	int steps;
+} bfsNode;
 extern coords speedspellscoords[50];
 extern int speedspellcount;
 
